@@ -8,6 +8,8 @@
 *.userosscache
 *.sln.docstates
 
+.DS_Store
+
 # Build results
 [Bb]in/
 [Oo]bj/
