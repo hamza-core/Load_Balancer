@@ -2,9 +2,9 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.IO;
 using System.Net;
 using System.Net.Sockets;
-using System.Runtime.Serialization.Formatters.Binary;
 using System.Threading.Tasks;
 
 namespace SubServer
@@ -23,9 +23,8 @@ namespace SubServer
 
         static void Main(string[] args)
         {
-
-            Console.WriteLine("Enter Port Number");
-            int port = int.Parse( Console.ReadLine());
+            Console.WriteLine("Enter Port Number:");
+            int port = int.Parse(Console.ReadLine());
             TcpListener listener = new TcpListener(IPAddress.Parse("127.0.0.1"), port);
             listener.Start();
             Console.WriteLine($"SubServer started and listening on port {port}...");
@@ -33,35 +32,35 @@ namespace SubServer
             while (true)
             {
                 TcpClient client = listener.AcceptTcpClient();
-                Console.WriteLine("Received a task from the  Server!"); 
+                Console.WriteLine("Received a task from the Server!");
 
                 Task.Run(() =>
                 {
-                    NetworkStream stream = client.GetStream();
-                    BinaryFormatter formatter = new BinaryFormatter();
-
-                    try
+                    using (client)
+                    using (NetworkStream stream = client.GetStream())
+                    using (StreamReader reader = new StreamReader(stream))
+                    using (StreamWriter writer = new StreamWriter(stream) { AutoFlush = true })
                     {
-                        string response = ProcessRequest(client, stream, formatter);
-                        formatter.Serialize(stream, response);
-                        stream.Flush();
-                    }
-                    catch (Exception ex)
-                    {
-                        formatter.Serialize(stream, $"Error: {ex.Message}");
-                        stream.Flush(); 
-                    }
-                    finally
-                    {
-                        client.Close();
+                        try
+                        {
+                            string clientJsonRequest = reader.ReadLine();
+                            if (!string.IsNullOrEmpty(clientJsonRequest))
+                            {
+                                string response = ProcessRequest(clientJsonRequest);
+                                writer.WriteLine(response.Replace("\r", "").Replace("\n", ""));
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            writer.WriteLine($"Error: {ex.Message}");
+                        }
                     }
                 });
             }
         }
 
-        public static string ProcessRequest(TcpClient tcpClient, NetworkStream networkStream, BinaryFormatter formatter)
+        public static string ProcessRequest(string clientJsonRequest)
         {
-            string clientJsonRequest = (string)formatter.Deserialize(networkStream);
             var clientRequest = JsonConvert.DeserializeObject<Dictionary<string, object>>(clientJsonRequest);
 
             string authCode = clientRequest["authCode"].ToString();
@@ -119,25 +118,32 @@ namespace SubServer
             {
                 return "Account not found.";
             }
-            return JsonConvert.SerializeObject(Accounts[id], Formatting.Indented);
+            return JsonConvert.SerializeObject(Accounts[id], Formatting.None); // Using None for single-line sending
         }
 
         public static string DepositAmount(string accNo, decimal amount)
         {
-            if (!Accounts.ContainsKey(accNo)) return "Account not found.";
+            if (!Accounts.TryGetValue(accNo, out BankAccount account)) return "Account not found.";
 
-            Accounts[accNo].Balance += amount;
-            return $"Amount deposited successfully. New Balance: {Accounts[accNo].Balance}";
+            // Lock the specific account to prevent race conditions during updates
+            lock (account)
+            {
+                account.Balance += amount;
+                return $"Amount deposited successfully. New Balance: {account.Balance}";
+            }
         }
 
         public static string WithdrawAmount(string accNo, decimal amount)
         {
-            if (!Accounts.ContainsKey(accNo)) return "Account not found.";
+            if (!Accounts.TryGetValue(accNo, out BankAccount account)) return "Account not found.";
 
-            if (Accounts[accNo].Balance < amount) return "Insufficient funds.";
+            lock (account)
+            {
+                if (account.Balance < amount) return "Insufficient funds.";
 
-            Accounts[accNo].Balance -= amount;
-            return $"Amount withdrawn successfully. New Balance: {Accounts[accNo].Balance}";
+                account.Balance -= amount;
+                return $"Amount withdrawn successfully. New Balance: {account.Balance}";
+            }
         }
 
         public static string DeleteAccount(string accNo)

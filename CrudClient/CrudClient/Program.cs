@@ -1,7 +1,7 @@
 ﻿using System;
+using System.IO;
 using System.Net;
 using System.Net.Sockets;
-using System.Runtime.Serialization.Formatters.Binary;
 using Newtonsoft.Json;
 
 namespace CrudClient
@@ -9,7 +9,7 @@ namespace CrudClient
     internal class Program
     {
         public static int serverPort = 5000;
-        public static IPAddress IPAddress = IPAddress.Parse("127.0.0.1");
+        public static IPAddress IPAddress = IPAddress.Loopback;
 
         static void Main(string[] args)
         {
@@ -19,7 +19,7 @@ namespace CrudClient
 
             while (true)
             {
-                Console.WriteLine("1- Add Account");
+                Console.WriteLine("\n1- Add Account");
                 Console.WriteLine("2- Deposit Amount");
                 Console.WriteLine("3- Withdraw Amount");
                 Console.WriteLine("4- Retrieve Account");
@@ -35,10 +35,7 @@ namespace CrudClient
                 }
 
                 string request = BuildRequest(userChoice, authCode);
-                if (request == null)
-                {
-                    continue;
-                }
+                if (request == null) continue;
 
                 try
                 {
@@ -57,14 +54,14 @@ namespace CrudClient
             using (TcpClient client = new TcpClient())
             {
                 client.Connect(IPAddress, serverPort);
-                NetworkStream stream = client.GetStream();
-                BinaryFormatter formatter = new BinaryFormatter();
-
-                formatter.Serialize(stream, request);
-                stream.Flush(); 
-
-                string response = (string)formatter.Deserialize(stream);
-                return response;
+                using (NetworkStream stream = client.GetStream())
+                using (StreamWriter writer = new StreamWriter(stream) { AutoFlush = true })
+                using (StreamReader reader = new StreamReader(stream))
+                {
+                    // Remove newlines so the server can read it as a single line
+                    writer.WriteLine(request.Replace("\r", "").Replace("\n", ""));
+                    return reader.ReadLine();
+                }
             }
         }
 

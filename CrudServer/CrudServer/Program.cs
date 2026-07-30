@@ -1,7 +1,8 @@
-﻿using System;
+﻿using Newtonsoft.Json.Linq;
+using System;
+using System.IO;
 using System.Net;
 using System.Net.Sockets;
-using System.Runtime.Serialization.Formatters.Binary;
 using System.Threading.Tasks;
 
 namespace CrudServer
@@ -21,40 +22,40 @@ namespace CrudServer
             {
                 TcpClient tcpClient = tcpListener.AcceptTcpClient();
                 Console.WriteLine("Client connected to Server");
-
-                int port = FindServerToSendRequest();
-                Task.Run(() => { HandleClient(tcpClient, port); });
+                Task.Run(() => { HandleClient(tcpClient); });
             }
         }
 
-        static void HandleClient(TcpClient tcpClient, int portNo)
+        static void HandleClient(TcpClient tcpClient)
         {
             try
             {
-                BinaryFormatter formatter = new BinaryFormatter();
-                var stream = tcpClient.GetStream();
+                using (tcpClient)
+                using (var stream = tcpClient.GetStream())
+                using (var clientReader = new StreamReader(stream))
+                using (var clientWriter = new StreamWriter(stream) { AutoFlush = true })
+                {
+                    // Read JSON request from Client
+                    string clientJsonRequest = clientReader.ReadLine();
+                    if (string.IsNullOrEmpty(clientJsonRequest)) return;
 
-                // Receive message from Client
-                string clientJsonRequest = (string)formatter.Deserialize(stream);
+                    // Parse request to find AccountNumber for consistent routing
+                    string accNo = ExtractAccountNumber(clientJsonRequest);
+                    int portNo = FindServerToSendRequest(accNo);
 
-                // Proxy acts as a client to the SubServer
-                TcpClient subServerClient = new TcpClient();
-                subServerClient.Connect("127.0.0.1", portNo);
-                NetworkStream subServerStream = subServerClient.GetStream();
+                    // Forward request to SubServer
+                    using (TcpClient subServerClient = new TcpClient("127.0.0.1", portNo))
+                    using (NetworkStream subServerStream = subServerClient.GetStream())
+                    using (StreamReader subServerReader = new StreamReader(subServerStream))
+                    using (StreamWriter subServerWriter = new StreamWriter(subServerStream) { AutoFlush = true })
+                    {
+                        subServerWriter.WriteLine(clientJsonRequest);
 
-                // Forward request to SubServer
-                formatter.Serialize(subServerStream, clientJsonRequest);
-                subServerStream.Flush();
-
-                // Get response from SubServer
-                string subServerResponse = (string)formatter.Deserialize(subServerStream);
-
-                // Send response back to original Client
-                formatter.Serialize(stream, subServerResponse);
-                stream.Flush();
-
-                subServerClient.Close();
-                tcpClient.Close();
+                        // Send response back to original Client
+                        string subServerResponse = subServerReader.ReadLine();
+                        clientWriter.WriteLine(subServerResponse);
+                    }
+                }
             }
             catch (Exception ex)
             {
@@ -62,15 +63,37 @@ namespace CrudServer
             }
         }
 
-        static int SubServersRequestCount = 0;
-
-        public static int FindServerToSendRequest()
+        // Consistent routing: ensures the same account always goes to the same server
+        public static int FindServerToSendRequest(string accountNumber)
         {
-            int x = SubServersRequestCount++ % 3;
+            if (string.IsNullOrEmpty(accountNumber)) return 9000;
+
+            int hash = Math.Abs(accountNumber.GetHashCode());
+            int x = hash % 3;
 
             if (x == 0) return 9000;
             else if (x == 1) return 9001;
             else return 9002;
+        }
+
+        private static string ExtractAccountNumber(string jsonString)
+        {
+            try
+            {
+                var jObj = JObject.Parse(jsonString);
+                var payLoad = jObj["payLoad"];
+                if (payLoad == null) return "";
+
+                // If payload is just a string, it's the account number
+                if (payLoad.Type == JTokenType.String) return payLoad.ToString();
+
+                // If it's an object, it contains AccountNumber
+                return payLoad["AccountNumber"]?.ToString() ?? "";
+            }
+            catch
+            {
+                return "";
+            }
         }
     }
 }
